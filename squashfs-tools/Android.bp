@@ -69,3 +69,25 @@ cc_binary_host {
         "lz4_wrapper.c",
     ],
 }
+
+cc_binary_host {
+    name: "unsquashfs",
+
+    defaults: ["squashfs-tools_defaults"],
+
+    srcs: [
+        "unsquashfs.c",
+        "unsquash-1.c",
+        "unsquash-2.c",
+        "unsquash-3.c",
+        "unsquash-4.c",
+        "swap.c",
+        "compressor.c",
+        "unsquashfs_info.c",
+        "read_xattrs.c",
+        "unsquashfs_xattr.c",
+        "gzip_wrapper.c",
+        "android.c",
+        "lz4_wrapper.c",
+    ],
+}
