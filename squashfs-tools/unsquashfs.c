@@ -30,13 +30,9 @@
 #include "xattr.h"
 #include "unsquashfs_info.h"
 #include "stdarg.h"
+#include "fnmatch_compat.h"
 
-#ifndef linux
-#include <sys/sysctl.h>
-#else
 #include <sys/sysinfo.h>
-#endif
-
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -47,6 +43,7 @@ struct cache *fragment_cache, *data_cache;
 struct queue *to_reader, *to_inflate, *to_writer, *from_writer;
 pthread_t *thread, *inflator_thread;
 pthread_mutex_t	fragment_mutex;
+static off_t squashfs_start_offset = 0;
 
 /* user options that control parallelisation */
 int processors = -1;
@@ -636,7 +633,7 @@ int read_fs_bytes(int fd, long long byte, int bytes, void *buff)
 	TRACE("read_bytes: reading from position 0x%llx, bytes %d\n", byte,
 		bytes);
 
-	if(lseek(fd, off, SEEK_SET) == -1) {
+	if(lseek(fd, off + squashfs_start_offset, SEEK_SET) == -1) {
 		ERROR("Lseek failed because %s\n", strerror(errno));
 		return FALSE;
 	}
@@ -1122,7 +1119,11 @@ int create_inode(char *pathname, struct inode *i)
 	 	case SQUASHFS_CHRDEV_TYPE:
  		case SQUASHFS_LBLKDEV_TYPE:
 	 	case SQUASHFS_LCHRDEV_TYPE: {
-			int chrdev = i->type == SQUASHFS_CHRDEV_TYPE;
+			int chrdev = 0;
+			if ( i->type == SQUASHFS_CHRDEV_TYPE ||
+					i->type == SQUASHFS_LCHRDEV_TYPE)
+				chrdev = 1;
+
 			TRACE("create_inode: dev, rdev 0x%llx\n", i->data);
 
 			if(root_process) {
@@ -1645,9 +1646,9 @@ void squashfs_stat(char *source)
 
 	printf("Creation or last append time %s", mkfs_str ? mkfs_str :
 		"failed to get time\n");
-	printf("Filesystem size %.2f Kbytes (%.2f Mbytes)\n",
-		sBlk.s.bytes_used / 1024.0, sBlk.s.bytes_used /
-		(1024.0 * 1024.0));
+	printf("Filesystem size %llu bytes (%.2f Kbytes / %.2f Mbytes)\n",
+		sBlk.s.bytes_used, sBlk.s.bytes_used / 1024.0,
+		sBlk.s.bytes_used / (1024.0 * 1024.0));
 
 	if(sBlk.s.s_major == 4) {
 		printf("Compression %s\n", comp->name);
@@ -2179,7 +2180,6 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 	sigemptyset(&sigmask);
 	sigaddset(&sigmask, SIGQUIT);
 	sigaddset(&sigmask, SIGHUP);
-	sigaddset(&sigmask, SIGALRM);
 	if(pthread_sigmask(SIG_BLOCK, &sigmask, NULL) == -1)
 		EXIT_UNSQUASH("Failed to set signal mask in initialise_threads"
 			"\n");
@@ -2550,6 +2550,14 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 			dest = argv[i];
+        		} else if (strcmp(argv[i], "-offset") == 0 ||
+				strcmp(argv[i], "-o") == 0) {
+			if(++i == argc) {
+				fprintf(stderr, "%s: -offset missing argument\n",
+					argv[0]);
+				exit(1);
+			}
+			squashfs_start_offset = (off_t)atol(argv[i]);
 		} else if(strcmp(argv[i], "-processors") == 0 ||
 				strcmp(argv[i], "-p") == 0) {
 			if((++i == argc) || 
@@ -2642,6 +2650,8 @@ options:
 				"copyright information\n");
 			ERROR("\t-d[est] <pathname>\tunsquash to <pathname>, "
 				"default \"squashfs-root\"\n");
+			ERROR("\t-o[ffset] <bytes>\tskip <bytes> at start of input file, "
+				"default \"0\"\n");
 			ERROR("\t-n[o-progress]\t\tdon't display the progress "
 				"bar\n");
 			ERROR("\t-no[-xattrs]\t\tdon't extract xattrs in file system"
