@@ -31,6 +31,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <fnmatch.h>
 #include <pwd.h>
 #include <grp.h>
 #include <sys/wait.h>
@@ -38,11 +39,14 @@
 #include <limits.h>
 #include <errno.h>
 
+#ifndef FNM_EXTMATCH /* glibc extension */
+    #define FNM_EXTMATCH 0
+#endif
+
 #include "squashfs_fs.h"
 #include "mksquashfs.h"
 #include "action.h"
 #include "error.h"
-#include "fnmatch_compat.h"
 
 /*
  * code to parse actions
@@ -2284,9 +2288,12 @@ static char *get_start(char *s, int n)
 
 static int subpathname_fn(struct atom *atom, struct action_data *action_data)
 {
-	return fnmatch(atom->argv[0], get_start(strdupa(action_data->subpath),
+	char *path = strdup(action_data->subpath);
+	int is_match = fnmatch(atom->argv[0], get_start(path,
 		count_components(atom->argv[0])),
 		FNM_PATHNAME|FNM_PERIOD|FNM_EXTMATCH) == 0;
+	free(path);
+	return is_match;
 }
 
 /*

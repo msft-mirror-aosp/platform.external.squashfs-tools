@@ -322,7 +322,7 @@ failed:
 }
 
 
-static void xz_display_options(void *buffer, int size)
+void xz_display_options(void *buffer, int size)
 {
 	struct comp_opts *comp_opts = buffer;
 	int dictionary_size, flags, printed;
@@ -503,7 +503,7 @@ static int xz_uncompress(void *dest, void *src, int size, int outsize,
 }
 
 
-static void xz_usage()
+void xz_usage()
 {
 	fprintf(stderr, "\t  -Xbcj filter1,filter2,...,filterN\n");
 	fprintf(stderr, "\t\tCompress using filter1,filter2,...,filterN in");
