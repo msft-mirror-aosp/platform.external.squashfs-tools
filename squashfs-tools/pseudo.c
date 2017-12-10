@@ -2,7 +2,7 @@
  * Create a squashfs filesystem.  This is a highly compressed read only
  * filesystem.
  *
- * Copyright (c) 2009, 2010, 2012, 2014, 2017
+ * Copyright (c) 2009, 2010, 2012, 2014
  * Phillip Lougher <phillip@squashfs.org.uk>
  *
  * This program is free software; you can redistribute it and/or
@@ -30,9 +30,9 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <sys/stat.h>
 #include <ctype.h>
 
 #include "pseudo.h"
@@ -274,7 +274,6 @@ struct pseudo_dev *get_pseudo_file(int pseudo_id)
 int read_pseudo_def(char *def)
 {
 	int n, bytes;
-	int quoted = 0;
 	unsigned int major = 0, minor = 0, mode;
 	char type, *ptr;
 	char suid[100], sgid[100]; /* overflow safe */
@@ -285,22 +284,13 @@ int read_pseudo_def(char *def)
 
 	/*
 	 * Scan for filename, don't use sscanf() and "%s" because
-	 * that can't handle filenames with spaces.
-	 *
-	 * Filenames with spaces should either escape (backslash) the
-	 * space or use double quotes.
+	 * that can't handle filenames with spaces
 	 */
 	filename = malloc(strlen(def) + 1);
 	if(filename == NULL)
 		MEM_ERROR();
 
-	for(name = filename; (quoted || !isspace(*def)) && *def != '\0';) {
-		if(*def == '"') {
-			quoted = !quoted;
-			def ++;
-			continue;
-		}
-
+	for(name = filename; !isspace(*def) && *def != '\0';) {
 		if(*def == '\\') {
 			def ++;
 			if (*def == '\0')
@@ -327,11 +317,12 @@ int read_pseudo_def(char *def)
 		case -1:
 			/* FALLTHROUGH */
 		case 0:
-			/* FALLTHROUGH */
+			ERROR("Read filename, but failed to read or match "
+				"type\n");
+			break;
 		case 1:
-			ERROR("Couldn't parse filename, type or octal mode\n");
-			ERROR("If the filename has spaces, either quote it, or "
-				"backslash the spaces\n");
+			ERROR("Read filename and type, but failed to read or "
+				"match octal mode\n");
 			break;
 		case 2:
 			ERROR("Read filename, type and mode, but failed to "
@@ -397,20 +388,6 @@ int read_pseudo_def(char *def)
 			goto error;
 		}	
 		break;
-	case 's':
-		if(def[0] == '\0') {
-			ERROR("Not enough arguments in symlink pseudo "
-				"definition \"%s\"\n", orig_def);
-			ERROR("Expected symlink\n");
-			goto error;
-		}
-
-		if(strlen(def) > 65535) {
-			ERROR("Symlink pseudo definition %s is greater than 65535"
-								" bytes!\n", def);
-			goto error;
-		}
-		break;
 	default:
 		ERROR("Unsupported type %c\n", type);
 		goto error;
@@ -467,10 +444,6 @@ int read_pseudo_def(char *def)
 	case 'f':
 		mode |= S_IFREG;
 		break;
-	case 's':
-		/* permissions on symlinks are always rwxrwxrwx */
-		mode = 0777 | S_IFLNK;
-		break;
 	}
 
 	dev = malloc(sizeof(struct pseudo_dev));
@@ -487,8 +460,6 @@ int read_pseudo_def(char *def)
 		dev->command = strdup(def);
 		add_pseudo_file(dev);
 	}
-	if(type == 's')
-		dev->symlink = strdup(def);
 
 	pseudo = add_pseudo(pseudo, dev, filename, filename);
 
@@ -496,13 +467,12 @@ int read_pseudo_def(char *def)
 	return TRUE;
 
 error:
-	ERROR("Pseudo definitions should be of the format\n");
+	ERROR("Pseudo definitions should be of format\n");
 	ERROR("\tfilename d mode uid gid\n");
 	ERROR("\tfilename m mode uid gid\n");
 	ERROR("\tfilename b mode uid gid major minor\n");
 	ERROR("\tfilename c mode uid gid major minor\n");
-	ERROR("\tfilename f mode uid gid command\n");
-	ERROR("\tfilename s mode uid gid symlink\n");
+	ERROR("\tfilename f mode uid command\n");
 	free(filename);
 	return FALSE;
 }

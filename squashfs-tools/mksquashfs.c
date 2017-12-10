@@ -3,7 +3,7 @@
  * filesystem.
  *
  * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011,
- * 2012, 2013, 2014, 2017
+ * 2012, 2013, 2014
  * Phillip Lougher <phillip@squashfs.org.uk>
  *
  * This program is free software; you can redistribute it and/or
@@ -46,9 +46,14 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <regex.h>
+#include <fnmatch.h>
 #include <sys/wait.h>
 #include <limits.h>
 #include <ctype.h>
+
+#ifndef FNM_EXTMATCH /* glibc extension */
+    #define FNM_EXTMATCH 0
+#endif
 
 #ifndef linux
 #define __BYTE_ORDER BYTE_ORDER
@@ -92,10 +97,7 @@ FILE *block_map_file = NULL;
 #endif
 /* ANDROID CHANGES END */
 
-#include "fnmatch_compat.h"
-
 int delete = FALSE;
-int quiet = FALSE;
 int fd;
 struct squashfs_super_block sBlk;
 
@@ -116,7 +118,6 @@ int old_exclude = TRUE;
 int use_regex = FALSE;
 int nopad = FALSE;
 int exit_on_error = FALSE;
-static off_t squashfs_start_offset = 0;
 
 long long global_uid = -1, global_gid = -1;
 
@@ -459,7 +460,8 @@ int mangle2(void *strm, char *d, char *s, int size,
 				"code %d\n", comp->name, error);
 	}
 
-	if(c_byte == 0 || c_byte >= size) {
+	if(c_byte == 0 || c_byte >= size ||
+			(c_byte > (size * ((100.0 - compress_thresh_per) / 100.0)))) {
 		memcpy(d, s, size);
 		return size | (data_block ? SQUASHFS_COMPRESSED_BIT_BLOCK :
 			SQUASHFS_COMPRESSED_BIT);
@@ -559,9 +561,9 @@ int read_fs_bytes(int fd, long long byte, int bytes, void *buff)
 
 	pthread_cleanup_push((void *) pthread_mutex_unlock, &pos_mutex);
 	pthread_mutex_lock(&pos_mutex);
-	if(lseek(fd, off+squashfs_start_offset, SEEK_SET) == -1) {
+	if(lseek(fd, off, SEEK_SET) == -1) {
 		ERROR("read_fs_bytes: Lseek on destination failed because %s, "
-			"offset=0x%llx\n", strerror(errno), off+squashfs_start_offset);
+			"offset=0x%llx\n", strerror(errno), off);
 		res = 0;
 	} else if(read_bytes(fd, buff, bytes) < bytes) {
 		ERROR("Read on destination failed\n");
@@ -600,10 +602,10 @@ void write_destination(int fd, long long byte, int bytes, void *buff)
 	pthread_cleanup_push((void *) pthread_mutex_unlock, &pos_mutex);
 	pthread_mutex_lock(&pos_mutex);
 
-	if(lseek(fd, off+squashfs_start_offset, SEEK_SET) == -1) {
+	if(lseek(fd, off, SEEK_SET) == -1) {
 		ERROR("write_destination: Lseek on destination "
 			"failed because %s, offset=0x%llx\n", strerror(errno),
-			off+squashfs_start_offset);
+			off);
 		BAD_ERROR("Probably out of space on output %s\n",
 			block_device ? "block device" : "filesystem");
 	}
@@ -871,13 +873,13 @@ char *subpathname(struct dir_ent *dir_ent)
 }
 
 
-inline unsigned int get_inode_no(struct inode_info *inode)
+static inline unsigned int get_inode_no(struct inode_info *inode)
 {
 	return inode->inode_number;
 }
 
 
-inline unsigned int get_parent_no(struct dir_info *dir)
+static inline unsigned int get_parent_no(struct dir_info *dir)
 {
 	return dir->depth ? get_inode_no(dir->dir_ent->inode) : inode_no;
 }
@@ -999,8 +1001,10 @@ int create_inode(squashfs_inode *i_no, struct dir_info *dir_info,
 			"%d, fragment %d, offset %d, size %d\n", byte_size,
 			start_block, offset, fragment->index, fragment->offset,
 			fragment->size);
-		for(i = 0; i < offset; i++)
+		for(i = 0; i < offset; i++) {
 			TRACE("Block %d, size %d\n", i, block_list[i]);
+			total_size += SQUASHFS_COMPRESSED_SIZE_BLOCK(block_list[i]);
+		}
 /* ANDROID CHANGES START*/
 #ifdef ANDROID
 		sub_path = subpathname(dir_ent);
@@ -1037,8 +1041,10 @@ int create_inode(squashfs_inode *i_no, struct dir_info *dir_info,
 			"blocks %d, fragment %d, offset %d, size %d, nlink %d"
 			"\n", byte_size, start_block, offset, fragment->index,
 			fragment->offset, fragment->size, nlink);
-		for(i = 0; i < offset; i++)
+		for(i = 0; i < offset; i++) {
 			TRACE("Block %d, size %d\n", i, block_list[i]);
+			total_size += SQUASHFS_COMPRESSED_SIZE_BLOCK(block_list[i]);
+		}
 /* ANDROID CHANGES START*/
 #ifdef ANDROID
 		sub_path = subpathname(dir_ent);
@@ -1520,7 +1526,6 @@ again:
 	cache_block_put(compressed_buffer);
 
 finished:
-	do { } while (0);
 	pthread_cleanup_pop(0);
 
 	return buffer;
@@ -2137,7 +2142,7 @@ struct file_info *duplicate(long long file_size, long long bytes,
 }
 
 
-inline int is_fragment(struct inode_info *inode)
+static inline int is_fragment(struct inode_info *inode)
 {
 	off_t file_size = inode->buf.st_size;
 
@@ -2425,9 +2430,9 @@ void *writer(void *arg)
 		pthread_cleanup_push((void *) pthread_mutex_unlock, &pos_mutex);
 		pthread_mutex_lock(&pos_mutex);
 
-		if(lseek(fd, off+squashfs_start_offset, SEEK_SET) == -1) {
+		if(lseek(fd, off, SEEK_SET) == -1) {
 			ERROR("writer: Lseek on destination failed because "
-				"%s, offset=0x%llx\n", strerror(errno), off+squashfs_start_offset);
+				"%s, offset=0x%llx\n", strerror(errno), off);
 			BAD_ERROR("Probably out of space on output "
 				"%s\n", block_device ? "block device" :
 				"filesystem");
@@ -3116,19 +3121,19 @@ struct inode_info *lookup_inode3(struct stat *buf, int pseudo, int id,
 }
 
 
-struct inode_info *lookup_inode2(struct stat *buf, int pseudo, int id)
+static inline struct inode_info *lookup_inode2(struct stat *buf, int pseudo, int id)
 {
 	return lookup_inode3(buf, pseudo, id, NULL, 0);
 }
 
 
-inline struct inode_info *lookup_inode(struct stat *buf)
+static inline struct inode_info *lookup_inode(struct stat *buf)
 {
 	return lookup_inode2(buf, 0, 0);
 }
 
 
-inline void alloc_inode_no(struct inode_info *inode, unsigned int use_this)
+static inline void alloc_inode_no(struct inode_info *inode, unsigned int use_this)
 {
 	if (inode->inode_number == 0) {
 		inode->inode_number = use_this ? : inode_no ++;
@@ -3139,7 +3144,7 @@ inline void alloc_inode_no(struct inode_info *inode, unsigned int use_this)
 }
 
 
-inline struct dir_ent *create_dir_entry(char *name, char *source_name,
+static inline struct dir_ent *create_dir_entry(char *name, char *source_name,
 	char *nonstandard_pathname, struct dir_info *dir)
 {
 	struct dir_ent *dir_ent = malloc(sizeof(struct dir_ent));
@@ -3162,15 +3167,8 @@ inline struct dir_ent *create_dir_entry(char *name, char *source_name,
 }
 
 
-/* ANDROID CHANGES START*/
-#ifdef ANDROID
 static inline void add_dir_entry(struct dir_ent *dir_ent, struct dir_info *sub_dir,
 	struct inode_info *inode_info)
-#else
-inline void add_dir_entry(struct dir_ent *dir_ent, struct dir_info *sub_dir,
-	struct inode_info *inode_info)
-#endif
-/* ANDROID CHANGES END */
 {
 	struct dir_info *dir = dir_ent->our_dir;
 
@@ -3205,8 +3203,7 @@ inline void add_dir_entry(struct dir_ent *dir_ent, struct dir_info *sub_dir,
 	dir->count++;
 }
 
-
-inline void add_dir_entry2(char *name, char *source_name,
+static inline void add_dir_entry2(char *name, char *source_name,
 	char *nonstandard_pathname, struct dir_info *sub_dir,
 	struct inode_info *inode_info, struct dir_info *dir)
 {
@@ -3218,7 +3215,7 @@ inline void add_dir_entry2(char *name, char *source_name,
 }
 
 
-inline void free_dir_entry(struct dir_ent *dir_ent)
+static inline void free_dir_entry(struct dir_ent *dir_ent)
 {
 	if(dir_ent->name)
 		free(dir_ent->name);
@@ -3239,7 +3236,7 @@ inline void free_dir_entry(struct dir_ent *dir_ent)
 }
 
 
-inline void add_excluded(struct dir_info *dir)
+static inline void add_excluded(struct dir_info *dir)
 {
 	dir->excluded ++;
 }
@@ -3760,12 +3757,6 @@ void dir_scan2(struct dir_info *dir, struct pseudo *pseudo)
 				pseudo_ent->pathname, NULL,
 				lookup_inode2(&buf, PSEUDO_FILE_PROCESS,
 				pseudo_ent->dev->pseudo_id), dir);
-		} else if(pseudo_ent->dev->type == 's') {
-			add_dir_entry2(pseudo_ent->name, NULL,
-				pseudo_ent->pathname, NULL,
-				lookup_inode3(&buf, PSEUDO_FILE_OTHER, 0,
-				pseudo_ent->dev->symlink,
-				strlen(pseudo_ent->dev->symlink) + 1), dir);
 		} else {
 			add_dir_entry2(pseudo_ent->name, NULL,
 				pseudo_ent->pathname, NULL,
@@ -4377,6 +4368,7 @@ void initialise_threads(int readq, int fragq, int bwriteq, int fwriteq,
 	sigemptyset(&sigmask);
 	sigaddset(&sigmask, SIGQUIT);
 	sigaddset(&sigmask, SIGHUP);
+	sigaddset(&sigmask, SIGALRM);
 	if(pthread_sigmask(SIG_BLOCK, &sigmask, NULL) == -1)
 		BAD_ERROR("Failed to set signal mask in intialise_threads\n");
 
@@ -4456,8 +4448,7 @@ void initialise_threads(int readq, int fragq, int bwriteq, int fwriteq,
 
 	main_thread = pthread_self();
 
-	if(!quiet)
-		printf("Parallel mksquashfs: Using %d processor%s\n", processors,
+	printf("Parallel mksquashfs: Using %d processor%s\n", processors,
 			processors == 1 ? "" : "s");
 
 	/* Restore the signal mask for the main thread */
@@ -5128,9 +5119,6 @@ void write_filesystem_tables(struct squashfs_super_block *sBlk, int nopad)
 	total_bytes += total_inode_bytes + total_directory_bytes +
 		sizeof(struct squashfs_super_block) + total_xattr_bytes;
 
-	if(quiet)
-		return;
-
 	printf("\n%sSquashfs %d.%d filesystem, %s compressed, data block size"
 		" %d\n", exportable ? "Exportable " : "", SQUASHFS_MAJOR,
 		SQUASHFS_MINOR, comp->name, block_size);
@@ -5196,6 +5184,9 @@ void write_filesystem_tables(struct squashfs_super_block *sBlk, int nopad)
 				group->gr_name, id_table[i]->id);
 		}
 	}
+	
+	printf("Number of whitelisted (uncompressed) files %d\n", 
+	       whitelisted_count);
 }
 
 
@@ -5308,19 +5299,46 @@ int parse_num(char *arg, int *res)
 
 int get_physical_memory()
 {
-	/*
-	 * Long longs are used here because with PAE, a 32-bit
-	 * machine can have more than 4GB of physical memory
-	 *
-	 * sysconf(_SC_PHYS_PAGES) relies on /proc being mounted.
-	 * If it isn't fail.
-	 */
+	int phys_mem;
+#ifndef linux
+	#ifdef HW_MEMSIZE
+		#define SYSCTL_PHYSMEM HW_MEMSIZE
+	#elif defined(HW_PHYSMEM64)
+		#define SYSCTL_PHYSMEM HW_PHYSMEM64
+	#else
+		#define SYSCTL_PHYSMEM HW_PHYSMEM
+	#endif
+
+	int mib[2];
+	uint64_t sysctl_physmem = 0;
+	size_t sysctl_len = sizeof(sysctl_physmem);
+
+	mib[0] = CTL_HW;
+	mib[1] = SYSCTL_PHYSMEM;
+
+	if(sysctl(mib, 2, &sysctl_physmem, &sysctl_len, NULL, 0) == 0) {
+		/* some systems use 32-bit values, work with what we're given */
+		if (sysctl_len == 4)
+			sysctl_physmem = *(uint32_t*)&sysctl_physmem;
+		phys_mem = sysctl_physmem >> 20;
+	} else {
+		ERROR_START("Failed to get amount of available "
+			"memory.");
+		ERROR_EXIT("  Defaulting to least viable amount\n");
+		phys_mem = SQUASHFS_LOWMEM;
+	}
+  #undef SYSCTL_PHYSMEM
+#else
+	/* Long longs are used here because with PAE, a 32-bit
+	  machine can have more than 4GB of physical memory */
+
 	long long num_pages = sysconf(_SC_PHYS_PAGES);
 	long long page_size = sysconf(_SC_PAGESIZE);
-	int phys_mem = num_pages * page_size >> 20;
-
+	phys_mem = num_pages * page_size >> 20;
 	if(num_pages == -1 || page_size == -1)
 		return 0;
+
+#endif
 
 	if(phys_mem < SQUASHFS_LOWMEM)
 		BAD_ERROR("Mksquashfs requires more physical memory than is "
@@ -5424,8 +5442,8 @@ void calculate_queue_sizes(int mem, int *readq, int *fragq, int *bwriteq,
 
 
 #define VERSION() \
-	printf("mksquashfs version 4.3-git (2017/07/18)\n");\
-	printf("copyright (C) 2017 Phillip Lougher "\
+	printf("mksquashfs version 4.3-git (2014/09/12)\n");\
+	printf("copyright (C) 2014 Phillip Lougher "\
 		"<phillip@squashfs.org.uk>\n\n"); \
 	printf("This program is free software; you can redistribute it and/or"\
 		"\n");\
@@ -5680,15 +5698,6 @@ print_compressor_options:
 			force_progress = TRUE;
 		else if(strcmp(argv[i], "-no-exports") == 0)
 			exportable = FALSE;
-        else if(strcmp(argv[i], "-offset") == 0 ||
-				strcmp(argv[i], "-o") ==0) {
-			if(++i == argc) {
-				ERROR("%s: %s offset missing argument\n", argv[0],
-							argv[i - 1]);
-				exit(1);
-			}
-			squashfs_start_offset = (off_t)atol(argv[i]);
-        }        
 		else if(strcmp(argv[i], "-processors") == 0) {
 			if((++i == argc) || !parse_num(argv[i], &processors)) {
 				ERROR("%s: -processors missing or invalid "
@@ -5922,12 +5931,8 @@ print_compressor_options:
 		else if(strcmp(argv[i], "-noappend") == 0)
 			delete = TRUE;
 
-		else if(strcmp(argv[i], "-quiet") == 0)
-			quiet = TRUE;
-
 		else if(strcmp(argv[i], "-keep-as-directory") == 0)
 			keep_as_directory = TRUE;
-
 /* ANDROID CHANGES START*/
 #ifdef ANDROID
 		else if(strcmp(argv[i], "-android-fs-config") == 0)
@@ -5970,6 +5975,7 @@ print_compressor_options:
 		}
 #endif
 /* ANDROID CHANGES END */
+
 		else if(strcmp(argv[i], "-exit-on-error") == 0)
 			exit_on_error = TRUE;
 
@@ -6056,14 +6062,6 @@ printOptions:
 				"definition\n");
 			ERROR("-pf <pseudo-file>\tAdd list of pseudo file "
 				"definitions\n");
-			ERROR("\t\t\tPseudo definitions should be of the "
-				"format\n");
-			ERROR("\t\t\t\tfilename d mode uid gid\n");
-			ERROR("\t\t\t\tfilename m mode uid gid\n");
-			ERROR("\t\t\t\tfilename b mode uid gid major minor\n");
-			ERROR("\t\t\t\tfilename c mode uid gid major minor\n");
-			ERROR("\t\t\t\tfilename f mode uid gid command\n");
-			ERROR("\t\t\t\tfilename s mode uid gid symlink\n");
 			ERROR("-sort <sort_file>\tsort files according to "
 				"priorities in <sort_file>.  One\n");
 			ERROR("\t\t\tfile or dir with priority per line.  "
@@ -6095,7 +6093,6 @@ printOptions:
 				"using recovery file <name>\n");
 			ERROR("-no-recovery\t\tdon't generate a recovery "
 				"file\n");
-			ERROR("-quiet\t\t\tno verbose output\n");
 			ERROR("-info\t\t\tprint files written to filesystem\n");
 			ERROR("-no-progress\t\tdon't display the progress "
 				"bar\n");
@@ -6112,9 +6109,6 @@ printOptions:
 			ERROR("\nMiscellaneous options:\n");
 			ERROR("-root-owned\t\talternative name for -all-root"
 				"\n");
-			ERROR("-o <offset>\t\tSkip <offset> bytes at the "
-				"beginning of the file.\n\t\t\t"
-				"Default 0 bytes\n");            
 			ERROR("-noInodeCompression\talternative name for -noI"
 				"\n");
 			ERROR("-noDataCompression\talternative name for -noD"
@@ -6307,10 +6301,8 @@ printOptions:
 		void *comp_data = compressor_dump_options(comp, block_size,
 			&size);
 
-		if(!quiet)
-			printf("Creating %d.%d filesystem on %s, block size %d.\n",
-				SQUASHFS_MAJOR, SQUASHFS_MINOR,
-				argv[source + 1], block_size);
+		printf("Creating %d.%d filesystem on %s, block size %d.\n",
+			SQUASHFS_MAJOR, SQUASHFS_MINOR, argv[source + 1], block_size);
 
 		/*
 		 * store any compressor specific options after the superblock,

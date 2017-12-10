@@ -31,10 +31,7 @@ struct pseudo_dev {
 	unsigned int	major;
 	unsigned int	minor;
 	int		pseudo_id;
-	union {
-		char		*command;
-		char		*symlink;
-	};
+	char		*command;
 };
 
 struct pseudo_entry {

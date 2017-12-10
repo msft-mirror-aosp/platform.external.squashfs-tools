@@ -184,7 +184,7 @@ failed:
 }
 
 
-static void lz4_display_options(void *buffer, int size)
+void lz4_display_options(void *buffer, int size)
 {
 	struct lz4_comp_opts *comp_opts = buffer;
 
@@ -225,20 +225,11 @@ static int lz4_compress(void *strm, void *dest, void *src,  int size,
 {
 	int res;
 
-/* ANDROID CHANGES START*/
-#ifdef ANDROID
 	if(hc)
 		res = LZ4_compress_HC(src, dest, size, block_size,
 				      LZ4HC_CLEVEL_DEFAULT);
 	else
 		res = LZ4_compress_default(src, dest, size, block_size);
-#else
-	if(hc)
-		res = LZ4_compressHC_limitedOutput(src, dest, size, block_size);
-	else
-		res = LZ4_compress_limitedOutput(src, dest, size, block_size);
-#endif
-/* ANDROID CHANGES END */
 
 	if(res == 0) {
 		/*
@@ -271,7 +262,7 @@ static int lz4_uncompress(void *dest, void *src, int size, int outsize,
 }
 
 
-static void lz4_usage()
+void lz4_usage()
 {
 	fprintf(stderr, "\t  -Xhc\n");
 	fprintf(stderr, "\t\tCompress using LZ4 High Compression\n");
