@@ -3296,9 +3296,6 @@ void dir_scan(squashfs_inode *inode, char *pathname,
 /* ANDROID CHANGES START*/
 #ifdef ANDROID
 	dir_ent->capabilities = caps;
-	if (android_config) {
-		android_fs_config(fs_config_func, "", &dir_ent->inode->buf, target_out_path, &dir_ent->capabilities);
-	}
 #endif
 /* ANDROID CHANGES END */
 
