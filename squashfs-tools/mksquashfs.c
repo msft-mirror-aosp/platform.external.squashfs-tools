@@ -50,7 +50,6 @@
 #include <sys/wait.h>
 #include <limits.h>
 #include <ctype.h>
-#include <sys/sysmacros.h>
 
 #ifndef FNM_EXTMATCH /* glibc extension */
     #define FNM_EXTMATCH 0
