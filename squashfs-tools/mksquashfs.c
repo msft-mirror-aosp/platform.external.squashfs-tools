@@ -86,7 +86,6 @@
 #include "android.h"
 #include "private/android_filesystem_config.h"
 #include "private/canned_fs_config.h"
-#include "private/fs_config.h"
 int android_config = FALSE;
 char *context_file = NULL;
 char *mount_point = NULL;
